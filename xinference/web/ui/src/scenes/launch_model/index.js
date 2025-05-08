@@ -8,65 +8,12 @@ import { useNavigate } from 'react-router-dom'
 import { ApiContext } from '../../components/apiContext'
 import ErrorMessageSnackBar from '../../components/errorMessageSnackBar'
 import fetchWrapper from '../../components/fetchWrapper'
+import SuccessMessageSnackBar from '../../components/successMessageSnackBar'
 import Title from '../../components/Title'
 import { isValidBearerToken } from '../../components/utils'
+import { featureModels } from './data/data'
 import LaunchCustom from './launchCustom'
 import LaunchModelComponent from './LaunchModel'
-
-const featureModels = [
-  {
-    type: 'llm',
-    feature_models: [
-      'deepseek-v3',
-      'deepseek-r1',
-      'deepseek-r1-distill-qwen',
-      'deepseek-r1-distill-llama',
-      'qwen2.5-instruct',
-      'qwen2.5-vl-instruct',
-      'qwen2.5-coder-instruct',
-      'llama-3.1-instruct',
-    ],
-  },
-  {
-    type: 'embedding',
-    feature_models: [
-      'bge-large-zh-v1.5',
-      'bge-large-en-v1.5',
-      'bge-m3',
-      'gte-Qwen2',
-      'jina-embeddings-v3',
-    ],
-  },
-  {
-    type: 'rerank',
-    feature_models: [],
-  },
-  {
-    type: 'image',
-    feature_models: [
-      'FLUX.1-dev',
-      'FLUX.1-schnell',
-      'sd3.5-large',
-      'HunyuanDiT-v1.2',
-      'sd3.5-medium',
-    ],
-  },
-  {
-    type: 'audio',
-    feature_models: [
-      'CosyVoice2-0.5B',
-      'FishSpeech-1.5',
-      'F5-TTS',
-      'ChatTTS',
-      'SenseVoiceSmall',
-      'whisper-large-v3',
-    ],
-  },
-  {
-    type: 'video',
-    feature_models: [],
-  },
-]
 
 const LaunchModel = () => {
   const [value, setValue] = React.useState(
@@ -116,6 +63,7 @@ const LaunchModel = () => {
     <Box m="20px">
       <Title title={t('menu.launchModel')} />
       <ErrorMessageSnackBar />
+      <SuccessMessageSnackBar />
       <TabContext value={value}>
         <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
           <TabList value={value} onChange={handleTabChange} aria-label="tabs">

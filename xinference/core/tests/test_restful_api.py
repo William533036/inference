@@ -317,6 +317,11 @@ async def test_restful_api(setup):
     assert custom_model_reg is None
 
 
+@pytest.mark.asyncio
+async def test_restful_api_xllamacpp(set_use_xllamacpp, setup):
+    await test_restful_api(setup)
+
+
 def test_restful_api_for_embedding(setup):
     model_name = "gte-base"
     model_spec = BUILTIN_EMBEDDING_MODELS[model_name]
@@ -356,6 +361,9 @@ def test_restful_api_for_embedding(setup):
 
     assert "embedding" in embedding_res["data"][0]
     assert len(embedding_res["data"][0]["embedding"]) == model_spec.dimensions
+    assert "model_replica" in embedding_res
+    assert embedding_res["model_replica"] is not None
+    assert embedding_res["model"] == payload["model"]
 
     # test multiple
     payload = {
@@ -1244,13 +1252,16 @@ def test_launch_model_async(setup):
     assert model_uid_res == "test_qwen_15"
 
     status_url = f"{endpoint}/v1/models/instances?model_uid=test_qwen_15"
+    progress_url = f"{endpoint}/v1/models/test_qwen_15/progress"
     while True:
         response = requests.get(status_url)
         response_data = response.json()
         assert len(response_data) == 1
         res = response_data[0]
-        print(res)
+        progress = requests.get(progress_url).json()
+        assert progress["progress"] is not None
         if res["status"] == "READY":
+            assert progress["progress"] == 1.0
             break
         time.sleep(2)
 
@@ -1260,6 +1271,42 @@ def test_launch_model_async(setup):
 
     response = requests.get(status_url)
     assert len(response.json()) == 0
+
+
+def test_cancel_launch_model(setup):
+    endpoint, _ = setup
+    url = f"{endpoint}/v1/models?wait_ready=false"
+
+    payload = {
+        "model_uid": "test_qwen_25",
+        "model_engine": "llama.cpp",
+        "model_name": "qwen2.5-instruct",
+        "model_size_in_billions": "0_5",
+        "quantization": "q4_0",
+    }
+
+    response = requests.post(url, json=payload)
+    response_data = response.json()
+    model_uid_res = response_data["model_uid"]
+    assert model_uid_res == "test_qwen_25"
+
+    status_url = f"{endpoint}/v1/models/instances?model_uid=test_qwen_25"
+    cancel_url = f"{endpoint}/v1/models/test_qwen_25/cancel"
+
+    cancel_called = False
+
+    while True:
+        response = requests.get(status_url)
+        response_data = response.json()[0]
+
+        if response_data["status"] == "CREATING":
+            if not cancel_called:
+                requests.post(cancel_url)
+                cancel_called = True
+            continue
+        else:
+            assert response_data["status"] == "ERROR"
+            break
 
 
 def test_events(setup):

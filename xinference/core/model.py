@@ -185,7 +185,7 @@ class ModelActor(xo.StatelessActor, CancelMixin):
                 )
 
         if hasattr(self._model, "stop") and callable(self._model.stop):
-            self._model.stop()
+            await asyncio.to_thread(self._model.stop)
 
         if isinstance(self._model, LLMVLLMModel):
             if self._transfer_ref is not None:
@@ -231,6 +231,8 @@ class ModelActor(xo.StatelessActor, CancelMixin):
         driver_info: Optional[dict] = None,  # for model across workers
     ):
         super().__init__()
+
+        from ..model.llm.llama_cpp.core import XllamaCppModel
         from ..model.llm.lmdeploy.core import LMDeployModel
         from ..model.llm.sglang.core import SGLANGModel
         from ..model.llm.transformers.core import PytorchModel
@@ -251,7 +253,8 @@ class ModelActor(xo.StatelessActor, CancelMixin):
         self._lock = (
             None
             if isinstance(
-                self._model, (PytorchModel, VLLMModel, SGLANGModel, LMDeployModel)
+                self._model,
+                (PytorchModel, VLLMModel, SGLANGModel, LMDeployModel, XllamaCppModel),
             )
             else asyncio.locks.Lock()
         )
@@ -281,6 +284,8 @@ class ModelActor(xo.StatelessActor, CancelMixin):
 
     async def __post_create__(self):
         self._loop = asyncio.get_running_loop()
+
+        logger.debug("Starting ModelActor at %s, uid: %s", self.address, self.uid)
 
         self._handle_pending_requests_task = asyncio.create_task(
             self._handle_pending_requests()
@@ -461,7 +466,9 @@ class ModelActor(xo.StatelessActor, CancelMixin):
         while True:
             i += 1
             try:
-                self._model.load()
+                if hasattr(self._model, "set_loop"):
+                    self._model.set_loop(asyncio.get_running_loop())
+                await asyncio.to_thread(self._model.load)
                 if hasattr(self._model, "driver_info"):
                     self._driver_info = self._model.driver_info
                 break
@@ -488,7 +495,23 @@ class ModelActor(xo.StatelessActor, CancelMixin):
 
     async def wait_for_load(self):
         if hasattr(self._model, "wait_for_load"):
-            self._model.wait_for_load()
+            await asyncio.to_thread(self._model.wait_for_load)
+
+    def need_create_pools(self):
+        return getattr(self._model, "need_create_pools", False)
+
+    def set_pool_addresses(self, pool_addresses: List[str]):
+        if hasattr(self._model, "set_pool_addresses"):
+            self._model.set_pool_addresses(pool_addresses)
+
+    def get_pool_addresses(self) -> Optional[List[str]]:
+        if hasattr(self._model, "get_pool_addresses"):
+            return self._model.get_pool_addresses()
+        return None
+
+    def set_worker_addresses(self, shard: int, worker_addresses: List[str]):
+        if hasattr(self._model, "set_worker_addresses"):
+            self._model.set_worker_addresses(shard, worker_addresses)
 
     def model_uid(self):
         return (

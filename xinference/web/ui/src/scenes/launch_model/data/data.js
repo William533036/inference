@@ -15,10 +15,12 @@ export const llmAllDataKey = [
   'gpu_idx',
   'download_hub',
   'model_path',
+  'reasoning_content',
   'gguf_quantization',
   'gguf_model_path',
   'cpu_offload',
   'peft_model_config',
+  'quantization_config',
 ]
 
 export const additionalParameterTipList = {
@@ -33,11 +35,16 @@ export const additionalParameterTipList = {
     'scheduling_policy',
     'tensor_parallel_size',
     'pipeline_parallel_size',
-    'enable_prefix_cache',
+    'enable_prefix_caching',
     'enable_chunked_prefill',
     'enforce_eager',
     'cpu_offload_gb',
     'disable_custom_all_reduce',
+    'limit_mm_per_prompt',
+    'model_quantization',
+    'mm_processor_kwargs',
+    'min_pixels',
+    'max_pixels',
   ],
   'sglang': [
     'mem_fraction_static',
@@ -51,3 +58,73 @@ export const additionalParameterTipList = {
   ],
   'mlx': ['cache_limit_gb', 'max_kv_size'],
 }
+
+export const quantizationParametersTipList = [
+  'load_in_8bit',
+  'load_in_4bit',
+  'llm_int8_threshold',
+  'llm_int8_skip_modules',
+  'llm_int8_enable_fp32_cpu_offload',
+  'llm_int8_has_fp16_weight',
+  'bnb_4bit_compute_dtype',
+  'bnb_4bit_quant_type',
+  'bnb_4bit_use_double_quant',
+  'bnb_4bit_quant_storage',
+]
+
+export const featureModels = [
+  {
+    type: 'llm',
+    feature_models: [
+      'qwen3',
+      'deepseek-v3',
+      'deepseek-r1',
+      'deepseek-r1-distill-qwen',
+      'deepseek-r1-distill-llama',
+      'qwen2.5-instruct',
+      'qwen2.5-vl-instruct',
+      'glm4-0414',
+      'QwQ-32B',
+      'gemma-3-it',
+    ],
+  },
+  {
+    type: 'embedding',
+    feature_models: [
+      'bge-large-zh-v1.5',
+      'bge-large-en-v1.5',
+      'bge-m3',
+      'gte-Qwen2',
+      'jina-embeddings-v3',
+    ],
+  },
+  {
+    type: 'rerank',
+    feature_models: [],
+  },
+  {
+    type: 'image',
+    feature_models: [
+      'FLUX.1-dev',
+      'FLUX.1-schnell',
+      'sd3.5-large',
+      'HunyuanDiT-v1.2',
+      'sd3.5-medium',
+    ],
+  },
+  {
+    type: 'audio',
+    feature_models: [
+      'CosyVoice2-0.5B',
+      'FishSpeech-1.5',
+      'F5-TTS',
+      'ChatTTS',
+      'SenseVoiceSmall',
+      'whisper-large-v3',
+    ],
+  },
+  {
+    type: 'video',
+    feature_models: [],
+  },
+]

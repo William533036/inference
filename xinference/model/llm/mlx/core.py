@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import importlib.util
 import logging
 import platform
 import sys
@@ -45,6 +45,7 @@ class MLXModelConfig(TypedDict, total=False):
     revision: Optional[str]
     max_gpu_memory: str
     trust_remote_code: bool
+    reasoning_content: bool
 
 
 class MLXGenerateConfig(TypedDict, total=False):
@@ -95,6 +96,7 @@ class MLXModel(LLM):
             model_config = MLXModelConfig()
         model_config.setdefault("revision", self.model_spec.model_revision)
         model_config.setdefault("trust_remote_code", True)
+        model_config.setdefault("reasoning_content", False)
         return model_config
 
     def _sanitize_generate_config(
@@ -146,13 +148,20 @@ class MLXModel(LLM):
         self._max_kv_size = kwargs.get("max_kv_size", None)
         self._prompt_cache = PromptCache()
 
-        return load(
+        model, tokenizer = load(
             self.model_path,
             tokenizer_config=tokenizer_config,
             model_config=self._model_config,
         )
+        if stop_token_ids := self.model_family.stop_token_ids:
+            for stop_token_id in stop_token_ids:
+                tokenizer.add_eos_token(stop_token_id)
+        return model, tokenizer
 
     def load(self):
+        reasoning_content = self._model_config.pop("reasoning_content")
+        self.prepare_parse_reasoning_content(reasoning_content)
+
         kwargs = {}
         kwargs["revision"] = self._model_config.get(
             "revision", self.model_spec.model_revision
@@ -163,7 +172,11 @@ class MLXModel(LLM):
         self._model, self._tokenizer = self._load_model(**kwargs)
 
     @classmethod
-    def match(
+    def check_lib(cls) -> bool:
+        return importlib.util.find_spec("mlx_lm") is not None
+
+    @classmethod
+    def match_json(
         cls, llm_family: "LLMFamilyV1", llm_spec: "LLMSpecV1", quantization: str
     ) -> bool:
         if llm_spec.model_format not in ["mlx"]:
@@ -204,7 +217,16 @@ class MLXModel(LLM):
         return prompt
 
     def _generate_stream_inner(self, **kwargs):
-        from mlx_lm.utils import make_logits_processors, make_sampler, stream_generate
+        try:
+            from mlx_lm.utils import (
+                make_logits_processors,
+                make_sampler,
+                stream_generate,
+            )
+        except ImportError:
+            # for mlx-lm >= 0.22.3
+            from mlx_lm.generate import stream_generate
+            from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         sampler = make_sampler(
             temp=kwargs.pop("temperature"), top_p=kwargs.pop("top_p")
@@ -255,7 +277,7 @@ class MLXModel(LLM):
         start = time.time()
         output = ""
         tokens = []
-        for chunk_resp, i in zip(
+        for i, chunk_resp in enumerate(
             self._generate_stream_inner(
                 prompt_token_ids=prompt_token_ids,
                 max_tokens=max_tokens,
@@ -264,8 +286,7 @@ class MLXModel(LLM):
                 repetition_penalty=kwargs["repetition_penalty"],
                 repetition_context_size=kwargs["repetition_context_size"],
                 prompt_cache=self._prompt_cache.cache if self._prompt_cache else None,  # type: ignore
-            ),
-            range(max_tokens),
+            )
         ):
             token = chunk_resp.token
             tokens.append(token)
@@ -406,7 +427,7 @@ class MLXChatModel(MLXModel, ChatModelMixin):
         return generate_config
 
     @classmethod
-    def match(
+    def match_json(
         cls, llm_family: "LLMFamilyV1", llm_spec: "LLMSpecV1", quantization: str
     ) -> bool:
         if llm_spec.model_format not in ["mlx"]:
@@ -428,12 +449,15 @@ class MLXChatModel(MLXModel, ChatModelMixin):
     ) -> Union[ChatCompletion, Iterator[ChatCompletionChunk]]:
         model_family = self.model_family.model_family or self.model_family.model_name
         tools = generate_config.pop("tools", []) if generate_config else None
-        full_context_kwargs = {}
+        full_context_kwargs = (
+            self._get_chat_template_kwargs_from_generate_config(generate_config) or {}  # type: ignore
+        )
         if tools:
-            if model_family in QWEN_TOOL_CALL_FAMILY:
+            if (
+                model_family in QWEN_TOOL_CALL_FAMILY
+                or model_family in DEEPSEEK_TOOL_CALL_FAMILY
+            ):
                 full_context_kwargs["tools"] = tools
-            elif model_family in DEEPSEEK_TOOL_CALL_FAMILY:
-                self._tools_to_messages_for_deepseek(messages, tools)
         assert self.model_family.chat_template is not None
         full_prompt = self.get_full_context(
             messages, self.model_family.chat_template, **full_context_kwargs
@@ -445,18 +469,24 @@ class MLXChatModel(MLXModel, ChatModelMixin):
         if stream:
             it = self.generate(full_prompt, generate_config)
             assert isinstance(it, Iterator)
-            return self._to_chat_completion_chunks(it)
+            return self._to_chat_completion_chunks(it, self.reasoning_parser)
         else:
             c = self.generate(full_prompt, generate_config)
             assert not isinstance(c, Iterator)
             if tools:
-                return self._tool_calls_completion(self.model_family, self.model_uid, c)
-            return self._to_chat_completion(c)
+                return self._post_process_completion(
+                    self.model_family, self.model_uid, c, self.reasoning_parser
+                )
+            return self._to_chat_completion(c, self.reasoning_parser)
 
 
 class MLXVisionModel(MLXModel, ChatModelMixin):
     @classmethod
-    def match(
+    def check_lib(cls) -> bool:
+        return importlib.util.find_spec("mlx_vlm") is not None
+
+    @classmethod
+    def match_json(
         cls, llm_family: "LLMFamilyV1", llm_spec: "LLMSpecV1", quantization: str
     ) -> bool:
         if llm_spec.model_format not in ["mlx"]:
@@ -497,22 +527,27 @@ class MLXVisionModel(MLXModel, ChatModelMixin):
 
     def _generate_stream_inner(self, **kwargs):
         import mlx.core as mx
-        from mlx_lm.utils import GenerationResponse
+
+        try:
+            from mlx_lm.utils import GenerationResponse
+        except ImportError:
+            # for mlx-lm >= 0.22.3
+            from mlx_lm.generate import GenerationResponse
         from mlx_vlm.utils import generate_step
 
-        inputs = kwargs["prompt_token_ids"]
+        inputs = kwargs.pop("prompt_token_ids")
 
-        max_tokens = kwargs.pop("max_tokens")
+        extra_kwargs = kwargs.copy()
         input_ids, pixel_values, mask, kwargs = inputs
+        kwargs.update(extra_kwargs)
 
         tokenizer = self._processor.tokenizer
         detokenizer = self._processor.detokenizer
 
         detokenizer.reset()
         tic = time.perf_counter()
-        for (token, logprobs), n in zip(
+        for n, (token, logprobs) in enumerate(
             generate_step(input_ids, self._model, pixel_values, mask, **kwargs),
-            range(max_tokens),
         ):
             if n == 0:
                 prompt_time = time.perf_counter() - tic
@@ -527,6 +562,7 @@ class MLXVisionModel(MLXModel, ChatModelMixin):
                 text=detokenizer.last_segment,
                 token=token,
                 logprobs=logprobs,
+                from_draft=False,
                 prompt_tokens=len(input_ids),
                 prompt_tps=prompt_tps,
                 generation_tokens=n + 1,
@@ -539,6 +575,7 @@ class MLXVisionModel(MLXModel, ChatModelMixin):
             text=detokenizer.last_segment,
             token=token,
             logprobs=logprobs,
+            from_draft=False,
             prompt_tokens=len(input_ids),
             prompt_tps=prompt_tps,
             generation_tokens=n + 1,
@@ -596,7 +633,10 @@ class MLXVisionModel(MLXModel, ChatModelMixin):
         if "internvl2" not in model_family.lower():
             from qwen_vl_utils import process_vision_info
 
-            full_context_kwargs = {}
+            full_context_kwargs = (
+                self._get_chat_template_kwargs_from_generate_config(generate_config)  # type: ignore
+                or {}
+            )
             if tools and model_family in QWEN_TOOL_CALL_FAMILY:
                 full_context_kwargs["tools"] = tools
             assert self.model_family.chat_template is not None
@@ -634,5 +674,7 @@ class MLXVisionModel(MLXModel, ChatModelMixin):
             c = self.generate(inputs, generate_config)
             assert not isinstance(c, Iterator)
             if tools:
-                return self._tool_calls_completion(self.model_family, self.model_uid, c)
+                return self._post_process_completion(
+                    self.model_family, self.model_uid, c
+                )
             return self._to_chat_completion(c)
